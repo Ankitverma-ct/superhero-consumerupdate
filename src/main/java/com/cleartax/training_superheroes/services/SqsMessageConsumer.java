@@ -15,46 +15,64 @@ import java.util.Optional;
 @Service
 public class SqsMessageConsumer {
 
-    @Autowired
-    private SqsClient sqsClient;
+    private final SqsClient sqsClient;
+    private final SqsConfig sqsConfig;
+    private final SuperheroService superheroService;
 
     @Autowired
-    private SqsConfig sqsConfig;
+    public SqsMessageConsumer(SqsClient sqsClient, SqsConfig sqsConfig, SuperheroService superheroService) {
+        this.sqsClient = sqsClient;
+        this.sqsConfig = sqsConfig;
+        this.superheroService = superheroService;
+    }
 
-    @Autowired
-    private SuperheroService superheroService;
-
-    // Poll the queue every 5 seconds
+    // Scheduled task to poll messages from the queue every 5 seconds
     @Scheduled(fixedRate = 5000)
-    public void consumeSuperhero() {
+    public void processQueueMessages() {
+        System.out.println("Checking for messages in the queue...");
 
-        System.out.println("running");
-
-        ReceiveMessageResponse receivedMessage = sqsClient.receiveMessage(ReceiveMessageRequest.builder()
+        // Fetch messages from the SQS queue
+        ReceiveMessageRequest request = ReceiveMessageRequest.builder()
                 .queueUrl(sqsConfig.getQueueUrl())
-                .build());
+                .build();
+        ReceiveMessageResponse response = sqsClient.receiveMessage(request);
 
-        List<Message> li = receivedMessage.messages();
+        List<Message> messages = response.messages();
 
-        for(Message m: li){
-            String id = m.body();
+        // If no messages are present
+        if (messages.isEmpty()) {
+            System.out.println("No new messages to process.");
+            return;
+        }
 
+        // Process each message
+        for (Message message : messages) {
+            String superheroId = message.body();
 
-            Superhero superhero = superheroService.getSuperhero(id)
-                    .orElseThrow(() -> new RuntimeException("Superhero not found"));;
-            superhero.setName("helloman");
-            superheroService.updateSuperhero(id, superhero);
+            try {
+                // Retrieve and update the superhero entity
+                Superhero superhero = superheroService.getSuperhero(superheroId)
+                        .orElseThrow(() -> new IllegalArgumentException("Superhero not found for ID: " + superheroId));
 
-//      DeleteMessageResponse deletedMessage = sqsClient.deleteMessage(DeleteMessageRequest.builder()
-//              .queueUrl(sqsConfig.getQueueUrl())
-//              .receiptHandle(receivedMessage.messages().get(0).receiptHandle())
-//              .build());
+                superhero.setName("Helloman");
+                superheroService.updateSuperhero(superheroId, superhero);
 
-            DeleteMessageResponse deletedMessage = sqsClient.deleteMessage(DeleteMessageRequest.builder()
-                    .queueUrl(sqsConfig.getQueueUrl())
-                    .receiptHandle(m.receiptHandle())
-                    .build());
+                // Delete the processed message from the queue
+                deleteMessageFromQueue(message.receiptHandle());
+                System.out.println("Successfully processed and deleted message with ID: " + superheroId);
+            } catch (Exception e) {
+                System.err.println("Error processing message with ID: " + superheroId + ". Error: " + e.getMessage());
+            }
+        }
+    }
 
-            System.out.println("deleted message response "+ deletedMessage.toString());
-        }}
+    private void deleteMessageFromQueue(String receiptHandle) {
+        DeleteMessageRequest deleteRequest = DeleteMessageRequest.builder()
+                .queueUrl(sqsConfig.getQueueUrl())
+                .receiptHandle(receiptHandle)
+                .build();
+
+        DeleteMessageResponse deleteResponse = sqsClient.deleteMessage(deleteRequest);
+        System.out.println("Message deleted from queue. Response: " + deleteResponse);
+    }
 }
